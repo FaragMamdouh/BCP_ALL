@@ -1,0 +1,1043 @@
+library(dplyr)
+library(patchwork)
+library(SingleCellExperiment)
+library(tidyverse)
+library(Matrix)
+library(scales)
+library(cowplot)
+library(RCurl)
+library(Seurat)
+library(cowplot)
+library(data.table)
+
+setwd("/Volumes/BCP-ALL/Normal Dataset")
+seurat <- Seurat::Read10X("Thoas/matrix_files")
+metadata = read.csv("Thoas/metadata.csv")
+
+seurat <- CreateSeuratObject(counts = seurat, meta.data = metadata)
+seurat <- subset(seurat, subset = nFeature_RNA >= 200)
+counts <- LayerData(seurat, assay = "RNA", layer = "counts")
+nonzero <- counts > 0
+keep_genes <- Matrix::rowSums(nonzero) >= 3
+counts <- counts[keep_genes, ]
+seurat <- CreateSeuratObject(counts, meta.data = seurat@meta.data)
+
+seurat <- subset(seurat, subset = orig.ident %in% c("NBM-3-CD19", "NBM-3-CD34", "NBM-4-CD19", "NBM-4-CD34"))
+
+
+# 2 QC
+# mitochondrial percentage
+seurat$mitoRatio <- PercentageFeatureSet(object = seurat, pattern = "^MT-")
+seurat$mitoRatio <- seurat@meta.data$mitoRatio / 100
+
+# ribosomal percentage
+seurat$riboRatio <- PercentageFeatureSet(seurat, pattern = "^RP[SL]")
+seurat$riboRatio <- seurat@meta.data$riboRatio / 100
+
+# HB percentage
+seurat$HB <- PercentageFeatureSet(seurat, pattern = "^HB[^(P)]")
+
+seurat$HB <- seurat@meta.data$HB / 100
+
+seurat$log10GenesPerUMI <- log10(seurat$nFeature_RNA) / log10(seurat$nCount_RNA)
+
+
+
+# Visualize QC metrics as a violin plot
+VlnPlot(seurat, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2, layer = "counts")
+
+
+VlnPlot(seurat, features = c("mitoRatio", "riboRatio"), ncol = 2, layer = "counts")
+
+
+
+# Organize metadata
+
+# Add Subject IDs to metadata
+seurat$subject = NA
+seurat$subject[which(str_detect(seurat$orig.ident, "NBM-3"))] = "NBM-3"
+seurat$subject[which(str_detect(seurat$orig.ident, "NBM-4"))] = "NBM-4"
+
+
+
+
+# Add sorting ID to metadata
+seurat$sorting = NA
+seurat$sorting[which(str_detect(seurat$orig.ident, "CD19"))] = "CD19"
+seurat$sorting[which(str_detect(seurat$orig.ident, "CD34"))] = "CD34"
+
+
+
+
+# Create metadata dataframe
+metadata <- seurat@meta.data
+
+# Add Cell IDs to metadata
+metadata$cells <- rownames(metadata)
+
+
+
+# Keep original ncount and nfeature
+metadata$orig_counts = metadata$nCount_RNA
+metadata$orig_features = metadata$nFeature_RNA
+
+
+
+
+# Rename columns
+metadata <- metadata %>%
+  dplyr::rename(sample = orig.ident,
+                nUMI = nCount_RNA,
+                nGene = nFeature_RNA)
+
+
+
+
+
+
+# Add metadata back to Seurat object
+seurat@meta.data <- metadata
+
+
+
+# What is the number of cell counts per sample?
+metadata %>% 
+  ggplot(aes(x = sample, fill = sample)) + 
+  geom_bar(width = 0.7, color = "black", show.legend = FALSE) +
+  scale_fill_brewer(palette = "Set1") +  
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black", face = "bold"),
+    axis.text.y = element_text(color = "black"),
+    axis.title.y = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = "Number of Cells per Sample",
+    x = "",
+    y = "Cell Count"
+  )
+
+
+
+# What is the depth of sequencing
+metadata %>% 
+  ggplot(aes(x = nUMI, color = sample, fill = sample)) + 
+  geom_density(alpha = 0.3, size = 1) +  
+  scale_x_log10() + 
+  geom_vline(xintercept = 1000, linetype = "dashed", color = "black", linewidth = 1) +
+  
+  scale_color_brewer(palette = "Set1") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "top",
+    axis.text = element_text(color = "black"),
+    axis.title.y = element_text(face = "bold"),
+    axis.title.x = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16)
+  ) +
+  labs(
+    title = "Transcript Counts per Cell",
+    x = "nUMI",
+    y = "Cell Density"
+  )
+
+
+
+#what is the number of genes per cells
+metadata %>%
+  ggplot(aes(x = nGene, color = sample, fill = sample)) +
+  geom_density(alpha = 0.3, size = 1) +  
+  scale_x_log10() +
+  geom_vline(xintercept = 600, linetype = "dashed", color = "black", linewidth = 1) +
+  scale_color_brewer(palette = "Set1") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "top",
+    axis.text = element_text(color = "black"),
+    axis.title.y = element_text(face = "bold"),
+    axis.title.x = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = "Gene Counts per Cell",
+    x = "nGene (log10 scale)",
+    y = "Cell Density"
+  )
+
+
+
+#what is the percentage of mitochonrial genes across the cells
+
+metadata %>% 
+  ggplot(aes(x = mitoRatio, color = sample, fill = sample)) + 
+  geom_density(alpha = 0.3, size = 1) + 
+  scale_x_log10() + 
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    axis.text = element_text(color = "black"),
+    axis.title = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16)
+  ) +
+  labs(
+    title = "Distribution of Mitochondrial Ratio per Sample",
+    x = "Mitochondrial Ratio",
+    y = "Cell Density"
+  )
+
+
+
+#what is the percentage of ribo genes across the cells
+
+metadata %>% 
+  ggplot(aes(x = riboRatio, color = sample, fill = sample)) + 
+  geom_density(alpha = 0.3, size = 1) + 
+  scale_x_log10() + 
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    axis.text = element_text(color = "black"),
+    axis.title = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16)
+  ) +
+  labs(
+    title = "Distribution of Ribo Ratio per Sample",
+    x = "Ribo Ratio",
+    y = "Cell Density"
+  )
+
+
+
+#what is the percentage of HB genes across the cells
+
+metadata %>% 
+  ggplot(aes(x = HB, color = sample, fill = sample)) + 
+  geom_density(alpha = 0.3, size = 1) + 
+  scale_x_log10() + 
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    axis.text = element_text(color = "black"),
+    axis.title = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16)
+  ) +
+  labs(
+    title = "Distribution of HB Ratio per Sample",
+    x = "HB Ratio",
+    y = "Cell Density"
+  )
+
+
+
+
+#What are the cells that has low UMI, low Gene Counts, and High mitochondrial genes?
+metadata %>% 
+  ggplot(aes(x = nUMI, y = nGene, color = mitoRatio)) + 
+  geom_point(alpha = 0.6, size = 1.5) + 
+  stat_smooth(method = "lm", color = "blue", se = TRUE, linetype = "dashed") +
+  scale_color_gradient(low = "gray90", high = "black") +
+  scale_x_log10() + 
+  scale_y_log10() + 
+  geom_vline(xintercept = 1000, linetype = "dotted", color = "red", linewidth = 0.8) +
+  geom_hline(yintercept = 600, linetype = "dotted", color = "red", linewidth = 0.8) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    axis.text = element_text(color = "black"),
+    axis.title = element_text(face = "bold"),
+    strip.text = element_text(face = "bold", size = 12)
+  ) +
+  labs(
+    title = "UMI vs Gene Counts Colored by Mitochondrial Ratio",
+    x = "nUMI",
+    y = "nGene ",
+    color = "Mito Ratio"
+  ) +
+  facet_wrap(~sample)
+
+
+
+# Distribution of Genes per UMI by Sample
+metadata %>%
+  ggplot(aes(x = log10GenesPerUMI, color = sample, fill = sample)) +
+  geom_density(alpha = 0.3, size = 1) +
+  geom_vline(xintercept = 0.8, linetype = "dashed", color = "black", linewidth = 1) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    axis.text = element_text(color = "black"),
+    axis.title = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16)
+  ) +
+  labs(
+    title = "Distribution of Genes per UMI by Sample",
+    x = "Genes per UMI",
+    y = "Cell Density"
+  )
+
+
+dim(seurat)
+
+
+
+# Filter out low quality reads using selected thresholds - these will change with experiment
+seurat <- subset(x = seurat, 
+                 subset= (nUMI >= 1000) & 
+                   (nGene >= 600) & 
+                   (log10GenesPerUMI > 0.8) & 
+                   (mitoRatio < .1) & (HB < .1))
+
+seurat[["RNA"]] <- JoinLayers(seurat[["RNA"]])
+counts <- LayerData(seurat, assay = "RNA", layer = "counts")
+nonzero <- counts > 0
+keep_genes <- Matrix::rowSums(nonzero) >= 10
+dual_counts <- counts[keep_genes, ]
+seurat <- CreateSeuratObject(dual_counts, meta.data = seurat@meta.data)
+
+
+
+dim(seurat)
+
+
+
+# counts of cell types before MALAT1 filteration
+types_before = seurat$celltypes
+
+
+
+celltype_counts <- as.data.frame(table(seurat$celltypes))
+colnames(celltype_counts) <- c("CellType", "Count")
+
+celltype_counts <- celltype_counts %>%
+  arrange(desc(Count)) %>%
+  mutate(CellType = factor(CellType, levels = CellType))
+
+
+
+
+before = celltype_counts %>%
+  ggplot(aes(x = CellType, y = Count, fill = CellType)) +
+  geom_bar(stat = "identity", width = 0.7, color = "black", show.legend = FALSE) +
+  geom_text(aes(label = Count), vjust = -0.5, size = 4, fontface = "bold") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black", face = "bold"),
+    axis.text.y = element_text(color = "black"),
+    axis.title.y = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = "Cell Type Distribution before MALAT1",
+    x = "",
+    y = "Cell Count"
+  )
+
+
+
+
+print(before)
+
+
+
+
+#MALAT1 Pipeline
+
+seurat_normalized <- NormalizeData(seurat, normalization.method = "LogNormalize", scale.factor = 10000)
+
+
+
+norm_counts <- LayerData(seurat_normalized, assay = "RNA", layer = "data")
+MALAT1 <- norm_counts["MALAT1",]
+
+
+
+define_malat1_threshold_ggplot2 <- function(counts, bw = 0.1, lwd = 2, breaks = 100,
+                                            chosen_min = 1, smooth = 1, abs_min = 0.3,
+                                            rough_max = 2, print_plots = TRUE, return_plots = FALSE) {
+  tryCatch({
+    # Calculate the density values
+    density_data <- density(counts, bw = bw,
+                            from = min(counts),
+                            to = max(counts))
+    # Fit a smooth line to the data
+    fit <- smooth.spline(density_data$x, density_data$y, spar = smooth)
+    # Predict the first derivative
+    first_derivative <- predict(fit, density_data$x, deriv = 1)
+    
+    # Find the local maxima
+    local_maxima <- density_data$x[which(diff(sign(first_derivative$y)) == -2)]
+    if(length(local_maxima) == 0) {
+      # Find x-val closest to rough_max
+      local_maxima <- density_data$x[which(abs(density_data$x - rough_max) == min(abs(density_data$x - rough_max)))]
+    }
+    # Plot the density with the local maxima
+    plot(density_data, main = "Density Plot with Local Maxima")
+    lines(fit, col = "blue")
+    points(local_maxima, predict(fit, local_maxima)$y, col = "red", pch = 19)
+    
+    # Create data frames for plotting
+    density_df <- data.frame(x = density_data$x, y = density_data$y)
+    fit_df <- data.frame(x = density_data$x, y = predict(fit, density_data$x)$y)
+    local_maxima_df <- data.frame(x = local_maxima, y = predict(fit, local_maxima)$y)
+    
+    # Plot the density with the local maxima using ggplot2
+    p1 <- ggplot() +
+      geom_line(data = density_df, aes(x = x, y = y), color = "black") +
+      geom_line(data = fit_df, aes(x = x, y = y), color = "blue") +
+      geom_point(data = local_maxima_df, aes(x = x, y = y), color = "red", size = 3) +
+      ggtitle("Density Plot with Local Maxima") +
+      cowplot::theme_cowplot() +
+      ylim(-0.05, NA)
+    
+    # Find the local minima
+    local_minima <- density_data$x[which(diff(sign(first_derivative$y)) == 2)]
+    if(length(local_minima) == 0) {
+      local_minima <- abs_min
+    }
+    # Plot the density with the local minima
+    plot(density_data, main = "Density Plot with Local Minima")
+    lines(fit, col = "blue")
+    points(local_minima, predict(fit, local_minima)$y, col = "red", pch = 19)
+    
+    # Create data frame for local minima
+    local_minima_df <- data.frame(x = local_minima, y = predict(fit, local_minima)$y)
+    
+    # Plot the density with the local minima using ggplot2
+    p2 <- ggplot() +
+      geom_line(data = density_df, aes(x = x, y = y), color = "black") +
+      geom_line(data = fit_df, aes(x = x, y = y), color = "blue") +
+      geom_point(data = local_minima_df, aes(x = x, y = y), color = "red", size = 3) +
+      ggtitle("Density Plot with Local Minima") +
+      cowplot::theme_cowplot() +
+      ylim(-0.05, NA)
+    
+    # Find biggest local maximum greater than desired value (default 1)
+    biggest_y <- max(density_data$y[density_data$x %in% local_maxima[local_maxima > chosen_min]])
+    maxi <- density_data$x[density_data$y == biggest_y]
+    
+    # Find local minimum closest to the left of that
+    local_minima <- local_minima[local_minima < maxi]
+    if(length(local_minima) < abs_min) {
+      local_minima <- abs_min
+    }
+    mini <- local_minima[(maxi - local_minima) == min(maxi - local_minima)]
+    
+    # Calculate delta to get range of values to isolate for quadratic calculation
+    delta <- maxi - mini
+    
+    # Subset dataframe
+    df <- as.data.frame(cbind(density_data$x, density_data$y))
+    colnames(df) <- c("x","y")
+    subset_df <- df[df[,1] >= (maxi - delta) & df[,1] <= (maxi + delta), ]
+    
+    # Fit a quadratic model (y ~ x + I(x^2))
+    quad_model <- lm(y ~ poly(x, 2, raw = TRUE), data = subset_df)
+    
+    # Plot quadratic
+    plot(df$x, df$y,
+         xlab = "Normalized MALAT1 expression",
+         ylab = "Density value")
+    # Add the extracted subset data
+    points(subset_df$x, subset_df$y, pch = 16, col = "blue")
+    # Add the fitted quadratic curve
+    curve(predict(quad_model, newdata = data.frame(x = x)), add = TRUE, col = "red", lwd = 2)
+    
+    p3 <- ggplot(df, aes(x = x, y = y)) +
+      geom_line(color = "black") +
+      geom_point(data = subset_df, aes(x = x, y = y), color = "blue", size = 2) +
+      stat_function(fun = function(x) predict(quad_model, newdata = data.frame(x = x)), color = "red", size = 1) +
+      labs(
+        title = "Density Plot with Quadratic Fit",
+        x = "Normalized MALAT1 expression",
+        y = "Density value"
+      ) +
+      cowplot::theme_cowplot() +
+      ylim(-0.05, NA)
+    
+    # Grab intercept
+    # Extract coefficients from the summary
+    coefficients <- summary(quad_model)$coefficients
+    # Extract coefficients
+    c <- coefficients[1, 1]
+    b <- coefficients[2, 1]
+    a <- coefficients[3, 1]
+    # Calculate discriminant
+    discriminant <- b^2 - 4 * a * c
+    # Grab first intercept
+    x_intercept1 <- (-b + sqrt(discriminant)) / (2 * a)
+    if(x_intercept1 < 0) {
+      x_intercept1 <- abs_min
+    }
+    
+    # Plot histogram with threshold
+    hist(counts, breaks = breaks,
+         xlab = "Normalized MALAT1 expression",
+         ylab = "Number of cells")
+    abline(v = x_intercept1, col = "red", lwd = 2)
+    
+    p4 <- ggplot(data = data.frame(counts), aes(x = .data[["counts"]])) +
+      geom_histogram(color = "black", bins = breaks, fill = "dodgerblue") +
+      cowplot::theme_cowplot() +
+      geom_vline(xintercept = x_intercept1, color = "red", linewidth = lwd) +
+      ggtitle("MALAT1")
+    
+    plots <- wrap_plots(p1, p2, p3, p4, ncol = 2)
+    
+    if (isTRUE(x = print_plots)) {
+      print(plots)
+    }
+    
+    if (isTRUE(x = return_plots)) {
+      res <- list("threshold" = x_intercept1,
+                  "plots" = plots)
+      return(res)
+    } else {
+      return(x_intercept1)
+    }
+    
+  }, error = function(e) {
+    # Code to execute if an error occurs
+    message(" An error occurred: Please make sure you have use a vector of normalized counts as input. This may also indicate that you have no high MALAT1 peaks, meaning this particular sample may be poor quality. Please check your histogram of normalized MALAT1 counts to investigate: ", e$message)
+    hist(counts, breaks = breaks,
+         xlab = "Normalized MALAT1 expression",
+         ylab = "Number of cells")
+    
+    ggplot(data = data.frame(counts), aes(x = .data[["counts"]])) +
+      geom_histogram(color = "black", bins = breaks, fill = "dodgerblue") +
+      cowplot::theme_cowplot() +
+      ggtitle("MALAT1")
+    
+    return(2)
+  })
+}
+
+
+
+threshold <- define_malat1_threshold_ggplot2(MALAT1)
+
+
+
+malat1_threshold <- MALAT1 > threshold
+seurat$malat1_threshold <- malat1_threshold
+seurat$malat1_threshold <- factor(seurat$malat1_threshold, levels = c("TRUE","FALSE"))
+seurat <- subset(seurat, subset = malat1_threshold == TRUE)
+
+celltype_counts <- as.data.frame(table(seurat$celltypes))
+colnames(celltype_counts) <- c("CellType", "Count")
+
+celltype_counts <- celltype_counts %>%
+  arrange(desc(Count)) %>%
+  mutate(CellType = factor(CellType, levels = CellType))
+
+
+
+#Visualize the cell type counts again
+
+after = celltype_counts %>%
+  ggplot(aes(x = CellType, y = Count, fill = CellType)) +
+  geom_bar(stat = "identity", width = 0.7, color = "black", show.legend = FALSE) +
+  geom_text(aes(label = Count), vjust = -0.5, size = 4, fontface = "bold") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black", face = "bold"),
+    axis.text.y = element_text(color = "black"),
+    axis.title.y = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = "Cell Type Distribution Dual Filteration",
+    x = "",
+    y = "Cell Count"
+  )
+
+
+
+before 
+
+
+after
+
+
+
+
+
+
+
+#keep only seurat object
+remove(list = setdiff(ls(), c("seurat", "seurat_normalized")))
+
+
+
+# Visualize the data after filteration
+metadata = seurat@meta.data
+
+
+
+# What is the number of cell counts per sample?
+metadata %>% 
+  ggplot(aes(x = sample, fill = sample)) + 
+  geom_bar(width = 0.7, color = "black", show.legend = FALSE) +
+  scale_fill_brewer(palette = "Set1") +  
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black", face = "bold"),
+    axis.text.y = element_text(color = "black"),
+    axis.title.y = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = "Number of Cells per Sample (Dual Filteration)",
+    x = "",
+    y = "Cell Count"
+  )
+
+
+
+# What is the depth of sequencing
+metadata %>% 
+  ggplot(aes(x = nUMI, color = sample, fill = sample)) + 
+  geom_density(alpha = 0.3, size = 1) +  
+  scale_x_log10() + 
+  geom_vline(xintercept = 1000, linetype = "dashed", color = "black", linewidth = 1) +
+  scale_color_brewer(palette = "Set1") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "top",
+    axis.text = element_text(color = "black"),
+    axis.title.y = element_text(face = "bold"),
+    axis.title.x = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16)
+  ) +
+  labs(
+    title = "Transcript Counts per Cell (Dual Filteration)",
+    x = "nUMI",
+    y = "Cell Density"
+  )
+
+
+
+#what is the number of genes per cells
+metadata %>%
+  ggplot(aes(x = nGene, color = sample, fill = sample)) +
+  geom_density(alpha = 0.3, size = 1) +  
+  scale_x_log10() +
+  geom_vline(xintercept = 600, linetype = "dashed", color = "black", linewidth = 1) +
+  scale_color_brewer(palette = "Set1") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "top",
+    axis.text = element_text(color = "black"),
+    axis.title.y = element_text(face = "bold"),
+    axis.title.x = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = "Gene Counts per Cell (Dual Filteration)",
+    x = "nGene (log10 scale)",
+    y = "Cell Density"
+  )
+
+
+
+#what is the percentage of mitochonrial genes across the cells
+
+metadata %>% 
+  ggplot(aes(x = mitoRatio, color = sample, fill = sample)) + 
+  geom_density(alpha = 0.3, size = 1) + 
+  scale_x_log10() + 
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    axis.text = element_text(color = "black"),
+    axis.title = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16)
+  ) +
+  labs(
+    title = "Distribution of Mitochondrial Ratio per Sample (Dual Filteration)",
+    x = "Mitochondrial Ratio",
+    y = "Cell Density"
+  )
+
+
+
+#What are the cells that has low UMI, low Gene Counts, and High mitochondrial genes?
+metadata %>% 
+  ggplot(aes(x = nUMI, y = nGene, color = mitoRatio)) + 
+  geom_point(alpha = 0.6, size = 1.5) + 
+  stat_smooth(method = "lm", color = "blue", se = TRUE, linetype = "dashed") +
+  scale_color_gradient(low = "gray90", high = "black") +
+  scale_x_log10() + 
+  scale_y_log10() + 
+  geom_vline(xintercept = 1000, linetype = "dotted", color = "red", linewidth = 0.8) +
+  geom_hline(yintercept = 600, linetype = "dotted", color = "red", linewidth = 0.8) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    axis.text = element_text(color = "black"),
+    axis.title = element_text(face = "bold"),
+    strip.text = element_text(face = "bold", size = 12)
+  ) +
+  labs(
+    title = "UMI vs Gene Counts Colored by Mitochondrial Ratio (Dual Filteration)",
+    x = "nUMI",
+    y = "nGene ",
+    color = "Mito Ratio"
+  ) +
+  facet_wrap(~sample)
+
+
+
+# Distribution of Genes per UMI by Sample
+metadata %>%
+  ggplot(aes(x = log10GenesPerUMI, color = sample, fill = sample)) +
+  geom_density(alpha = 0.3, size = 1) +
+  geom_vline(xintercept = 0.8, linetype = "dashed", color = "black", linewidth = 1) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    axis.text = element_text(color = "black"),
+    axis.title = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16)
+  ) +
+  labs(
+    title = "Distribution of Genes per UMI by Sample (Dual Filteration)",
+    x = "Genes per UMI",
+    y = "Cell Density"
+  )
+
+
+
+# Male or female?
+# 1. define your genes
+library(dplyr)
+xgene  <- "XIST"
+ygenes <- c("ZFY","UTY","DDX3Y",
+            "KDM5D","EIF1AY","USP9Y",
+            "NLGN4Y","RPS4Y2","RPS4Y1")
+
+# 2. pull out the log‐normalized expression
+expr <- GetAssayData(seurat_normalized, assay="RNA", slot="data")
+
+# 3. assemble per‐cell data.frame, using subject as the grouping variable
+df <- tibble(
+  cell    = colnames(expr),
+  XIST    = as.numeric(expr[xgene, ]),
+  Ysum    = Matrix::colSums(expr[ygenes, ], na.rm=TRUE),
+  subject = seurat_normalized$subject[ colnames(expr) ]
+)
+
+# 4. pivot to long format
+df_long <- df %>%
+  pivot_longer(c("XIST","Ysum"), names_to="gene", values_to="expr")
+
+
+
+
+
+ggplot(df_long, aes(x=subject, y=expr, color=gene)) +
+  geom_boxplot(position=position_dodge(width=0.8), outlier.shape=NA) +
+  geom_jitter(position=position_jitterdodge(jitter.width=0.2, dodge.width=0.8),
+              alpha=0.6, size=1) +
+  scale_color_manual(values=c(XIST="seagreen3", Ysum="grey70"),
+                     labels=c("XIST","Y genes")) +
+  labs(x="Sample (Subject)", y="Total Log‑Normalized Counts", color="") +
+  theme_classic(base_size=14) +
+  theme(
+    axis.text.x = element_text(angle=45, hjust=1),
+    legend.position = "top"
+  )
+
+
+
+
+seurat$gender = NA
+seurat$gender[which(str_detect(seurat$sample, "NBM-1"))] = "female"
+seurat$gender[which(str_detect(seurat$sample, "NBM-2"))] = "male"
+seurat$gender[which(str_detect(seurat$sample, "NBM-3"))] = "female"
+seurat$gender[which(str_detect(seurat$sample, "NBM-4"))] = "female"
+seurat$gender[which(str_detect(seurat$sample, "NBM-5"))] = "male"
+
+# Identification of cell cycle phase
+
+# CellCycle Scoring
+seurat_phase <- NormalizeData(seurat)
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+s.genes
+seurat_phase <- CellCycleScoring(seurat_phase, 
+                                 g2m.features = g2m.genes, 
+                                 s.features = s.genes,
+                                 set.ident = TRUE)
+
+
+
+
+# Visualize the distribution of cell cycle markers across
+RidgePlot(seurat_phase, features = c("PCNA", "TOP2A", "MCM6", "MKI67"), ncol = 2)
+
+
+# Identify the most variable genes
+seurat_phase <- FindVariableFeatures(seurat_phase, 
+                                     selection.method = "vst",
+                                     nfeatures = 2000, 
+                                     verbose = FALSE)
+seurat_phase <- ScaleData(seurat_phase)
+
+
+# Perform PCA
+seurat_phase <- RunPCA(seurat_phase)
+
+
+
+
+
+# Plot the PCA colored by cell cycle phase
+DimPlot(seurat_phase, reduction = "pca", group.by= "Phase",
+        split.by = "Phase")
+
+
+
+
+
+
+
+#Integration
+seurat <- NormalizeData(seurat)
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+seurat <- CellCycleScoring(seurat, 
+                           g2m.features = g2m.genes, 
+                           s.features = s.genes,
+                           set.ident = TRUE)
+
+seurat[["RNA"]] <- split(seurat[["RNA"]], f = seurat$sample)
+
+
+
+
+seurat <- seurat[!grepl("^IG[HKL]V", rownames(seurat)), ]
+seurat <- seurat[!grepl("^IG[HKL]J", rownames(seurat)), ]
+seurat <- seurat[!grepl("^IG[KL]C", rownames(seurat)), ]
+seurat <- seurat[!grepl("^IGH[ADEGM]", rownames(seurat)), ]
+seurat <- seurat[!grepl("^TR[ABDG][VJC]", rownames(seurat)), ]
+seurat <- seurat[!grepl("^TR[AB][VDJ]", rownames(seurat))]
+seurat <- seurat[!grepl("^IG[HKL][VDJC]", rownames(seurat))]
+
+# 
+seurat <- seurat[!grepl(c("^MT-"), rownames(seurat)), ]
+seurat <- seurat[!grepl(c("^RP[SL]"), rownames(seurat)), ]
+# 
+seurat <- seurat[!grepl(c("^HB[^(P)]"), rownames(seurat)) ,]
+
+# 
+# 
+setwd("/Volumes/BCP-ALL/Normal Dataset/Thoas/Gender/Figures of my protocol")
+library(readxl)
+cc = readxl::read_excel("CCgenes.xlsx", col_names = FALSE)
+seurat <- seurat[!rownames(seurat) %in% cc$...1 ,]
+
+
+
+DefaultAssay(seurat) = "RNA"
+seurat <- SCTransform(seurat,
+                      vars.to.regress = c("S.Score",  "G2M.Score", "nUMI","mitoRatio", "riboRatio", "nGene"),
+                      variable.features.n = 2000, new.assay.name = "SCT",verbose = FALSE)
+
+
+
+remove(list = setdiff(ls(), "seurat"))
+saveRDS(seurat, "seuratafterSCT.rds")
+
+
+
+
+seurat <- RunPCA(seurat)
+ElbowPlot(seurat, ndims = 50)
+
+
+
+for (i in 1:20) {
+  name <- paste0("Dimheatmap_", i, ".png")
+  png(filename = name, width = 1000, height = 800, res = 150)  # adjust size and resolution as needed
+  DimHeatmap(seurat, dims = i, cells = 500, balanced = TRUE)
+  dev.off()
+}
+
+
+
+
+seurat <- FindNeighbors(seurat, dims = 1:10, reduction = "pca")
+seurat <- FindClusters(seurat, resolution = 10, cluster.name = "unintegrated_clusters")
+seurat <- RunUMAP(seurat, dims = 1:10)
+DimPlot(seurat, reduction = "umap", group.by  = "sorting")
+DimPlot(seurat, reduction = "umap", group.by  = "sample")
+
+
+
+
+
+# integrate Datasets
+seurat@active.assay = "SCT"
+seurat <- IntegrateLayers(object = seurat, 
+                          method = CCAIntegration, 
+                          normalization.method = "SCT",                        
+                          new.reduction = "integrated.cca",
+                          verbose = TRUE)
+seurat <- IntegrateLayers(object = seurat, 
+                          method = HarmonyIntegration, 
+                          normalization.method = "SCT",                        
+                          new.reduction = "integrated.harmony",
+                          verbose = TRUE)
+seurat <- IntegrateLayers(object = seurat, 
+                          method = JointPCAIntegration, 
+                          normalization.method = "SCT",                        
+                          new.reduction = "integrated.PCA",
+                          verbose = TRUE)
+seurat <- IntegrateLayers(object = seurat, 
+                          method = RPCAIntegration, 
+                          normalization.method = "SCT",                        
+                          new.reduction = "integrated.RPCA",
+                          verbose = TRUE)
+library(Seurat)
+library(ggplot2)
+
+# Define a helper function to save plots
+save_plot <- function(plot, filename, width = 6, height = 5, dpi = 300) {
+  ggsave(filename, plot = plot, width = width, height = height, dpi = dpi)
+}
+
+# ---------- Harmony ----------
+seurat <- FindNeighbors(seurat, reduction = "integrated.harmony", dims = 1:20)
+seurat <- FindClusters(seurat)
+seurat <- RunUMAP(seurat, dims = 1:20, reduction = "integrated.harmony")
+Idents(seurat) <- "celltypes"
+
+p1 <- DimPlot(seurat, reduction = "umap", label = TRUE, label.size = 3, split.by = "sorting") + NoLegend()
+save_plot(p1, "harmony_umap_split.png")
+
+p2 <- DimPlot(seurat, reduction = "umap", label = TRUE)
+save_plot(p2, "harmony_umap.png")
+
+p3 <- FeaturePlot(seurat, features = "CD19", label = TRUE)
+save_plot(p3, "harmony_CD19.png")
+
+p4 <- FeaturePlot(seurat, features = "CD3E", label = TRUE)
+save_plot(p4, "harmony_CD3E.png")
+
+p5 <- FeaturePlot(seurat, features = "CD14", label = TRUE)
+save_plot(p5, "harmony_CD14.png")
+
+# ---------- PCA ----------
+seurat <- FindNeighbors(seurat, reduction = "integrated.PCA", dims = 1:20)
+seurat <- FindClusters(seurat)
+seurat <- RunUMAP(seurat, dims = 1:20, reduction = "integrated.PCA")
+Idents(seurat) <- "celltypes"
+
+p6 <- DimPlot(seurat, reduction = "umap", label = TRUE, label.size = 3, split.by = "sorting") + NoLegend()
+save_plot(p6, "pca_umap_split.png")
+
+p7 <- DimPlot(seurat, reduction = "umap", label = TRUE)
+save_plot(p7, "pca_umap.png")
+
+p8 <- FeaturePlot(seurat, features = "CD19", label = TRUE)
+save_plot(p8, "pca_CD19.png")
+
+p9 <- FeaturePlot(seurat, features = "CD3E", label = TRUE)
+save_plot(p9, "pca_CD3E.png")
+
+p10 <- FeaturePlot(seurat, features = "CD14", label = TRUE)
+save_plot(p10, "pca_CD14.png")
+
+# ---------- RPCA ----------
+seurat <- FindNeighbors(seurat, reduction = "integrated.RPCA", dims = 1:20)
+seurat <- FindClusters(seurat)
+seurat <- RunUMAP(seurat, dims = 1:20, reduction = "integrated.RPCA")
+Idents(seurat) <- "celltypes"
+
+p11 <- DimPlot(seurat, reduction = "umap", label = TRUE, label.size = 3, split.by = "sorting") + NoLegend()
+save_plot(p11, "rpca_umap_split.png")
+
+p12 <- DimPlot(seurat, reduction = "umap", label = TRUE)
+save_plot(p12, "rpca_umap.png")
+
+p13 <- FeaturePlot(seurat, features = "CD19", label = TRUE)
+save_plot(p13, "rpca_CD19.png")
+
+p14 <- FeaturePlot(seurat, features = "CD3E", label = TRUE)
+save_plot(p14, "rpca_CD3E.png")
+
+p15 <- FeaturePlot(seurat, features = "CD14", label = TRUE)
+save_plot(p15, "rpca_CD14.png")
+
+# ---------- CCA ----------
+seurat <- FindNeighbors(seurat, reduction = "integrated.cca", dims = 1:20)
+seurat <- FindClusters(seurat)
+seurat <- RunUMAP(seurat, dims = 1:20, reduction = "integrated.cca")
+Idents(seurat) <- "celltypes"
+
+p16 <- DimPlot(seurat, reduction = "umap", label = TRUE, label.size = 3, split.by = "sorting") + NoLegend()
+save_plot(p16, "cca_umap_split.png")
+
+p17 <- DimPlot(seurat, reduction = "umap", label = TRUE)
+save_plot(p17, "cca_umap.png")
+
+p18 <- FeaturePlot(seurat, features = "CD19", label = TRUE)
+save_plot(p18, "cca_CD19.png")
+
+p19 <- FeaturePlot(seurat, features = "CD3E", label = TRUE)
+save_plot(p19, "cca_CD3E.png")
+
+p20 <- FeaturePlot(seurat, features = "CD14", label = TRUE)
+save_plot(p20, "cca_CD14.png")
+
+
+
+
+saveRDS(seurat, "final_seurat.rds")
+
+
+
+seurat@assays[["RNA"]] = JoinLayers(seurat@assays[["RNA"]], layers = "counts")
+count_matrix = LayerData(seurat, assay = "RNA", layer = "counts")
+writeMM(count_matrix, "matrix.mtx")
+write.table(data.frame("gene" = rownames(count_matrix)), "gene_names.csv", quote = FALSE, row.names = F, col.names = FALSE)
+write.csv(seurat@meta.data, "metadata.csv", quote = F, row.names = F)
+
+write.csv(seurat@reductions$integrated.cca@cell.embeddings, "CCA_seurat.csv", row.names = F, col.names = F, quote = F)
+write.csv(seurat@reductions$integrated.harmony@cell.embeddings, "harmony_seurat.csv", row.names = F, col.names = F, quote = F)
+write.csv(seurat@reductions$integrated.PCA@cell.embeddings, "pca_seurat.csv", row.names = F, col.names = F, quote = F)
+write.csv(seurat@reductions$integrated.RPCA@cell.embeddings, "RPCA_seurat.csv", row.names = F, col.names = F, quote = F)
+
+
+
+
+
+
+
+
+
+
+
