@@ -1,0 +1,578 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Jun 12 12:22:45 2025
+
+@author: xmamfa
+"""
+#-----------------------------------------------------------------------------#
+# Import libraries 
+import os
+import tempfile
+
+import scanpy as sc
+import scvi
+import seaborn as sns
+import torch
+from rich import print
+import scib
+from scib_metrics.benchmark import Benchmarker
+import numpy
+import pandas as pd
+import matplotlib.pyplot as pl
+import scanpy as sc
+import igraph
+import loompy as lmp
+import anndata
+from scipy import io
+from scipy.sparse import coo_matrix, csr_matrix
+import os
+from collections import Counter
+import scanorama
+import scanpy.external as sce 
+import harmonypy as hm 
+import scanorama
+import numpy as np
+import scanpy.external as sce 
+import harmonypy as hm 
+import matplotlib.pyplot as plt
+import scanpy as sc
+import matplotlib.pyplot as plt
+import scanpy as sc
+import scanpy as sc
+import celltypist
+from celltypist import models
+import pandas as pd
+#-----------------------------------------------------------------------------#
+
+
+
+#-----------------------------------------------------------------------------#
+#Read the data 
+os.chdir("/Volumes/BCP-ALL/Normal Dataset/Thoas/Gender/Figures of my protocol")
+X = io.mmread("matrix.mtx")
+adata = anndata.AnnData(X = X.transpose().tocsr())
+metadata = pd.read_csv("metadata.csv")
+with open("gene_names.csv", "r") as f:
+    gene_names = f.read().splitlines()
+    adata.obs = metadata
+adata.obs.index = adata.obs["cells"]
+adata.var.index = gene_names
+
+
+pca_seurat = pd.read_csv("pca_seurat.csv")
+pca_seurat.index = adata.obs.index
+adata.obsm["seurat_pca"] = pca_seurat.to_numpy()
+
+
+rpca_seurat = pd.read_csv("rpca_seurat.csv")
+rpca_seurat.index = adata.obs.index
+adata.obsm["seurat_rpca"] = rpca_seurat.to_numpy()
+
+
+cca_seurat = pd.read_csv("cca_seurat.csv")
+cca_seurat.index = adata.obs.index
+adata.obsm["seurat_cca"] = cca_seurat.to_numpy()
+
+
+harmony_seurat = pd.read_csv("harmony_seurat.csv")
+harmony_seurat.index = adata.obs.index
+adata.obsm["seurat_harmony"] = harmony_seurat.to_numpy()
+
+#-----------------------------------------------------------------------------#
+
+
+
+
+
+#-----------------------------------------------------------------------------#
+#Prepare the data
+adata.layers["counts"] = adata.X.copy()
+
+adata.raw = adata  # keep full dimension safe
+
+
+#normalization
+sc.pp.normalize_total(adata)
+# Logarithmize the data
+sc.pp.log1p(adata)
+
+sc.pp.highly_variable_genes(
+    adata,
+    flavor="seurat_v3",
+    n_top_genes=2000,
+    batch_key="sample",
+    subset=True,
+)
+adata.layers["normalized"] = adata.X.copy()
+sc.pp.scale(adata)
+adata.layers["scaled"] = adata.X.copy()
+adata.X = adata.layers["normalized"].copy()
+sc.pp.regress_out(adata, ["mitoRatio", "riboRatio", 
+                           "S.Score","G2M.Score"])
+adata.layers["regressed_normalized"] = adata.X.copy()
+sc.pp.scale(adata)
+adata.layers["regressed_scaled"] = adata.X.copy()
+
+#-----------------------------------------------------------------------------#
+import scanpy as sc
+
+# Define a helper function
+def run_bbknn(layer_key, obsm_key, title):
+    ad = adata.copy()
+    sc.tl.pca(ad, svd_solver='arpack', layer=layer_key)
+    sc.external.pp.bbknn(ad, batch_key='sample')
+    sc.tl.umap(ad)
+    
+    # Store and plot UMAP
+    ad.obsm[obsm_key] = ad.obsm['X_umap']
+    sc.pl.embedding(
+        ad, basis=obsm_key,
+        color=["sample", "sorting", "celltypes"],
+        title=title, ncols=1
+    )
+    return ad
+
+# Run BBKNN for each preprocessing variant
+bbknn_normalized = run_bbknn("normalized", "bbknn_normalized", "BBKNN normalized")
+bbknn_scaled = run_bbknn("scaled", "bbknn_scaled", "BBKNN scaled")
+bbknn_regressed_normalized = run_bbknn("regressed_normalized", "bbknn_regressed_normalized", "BBKNN regressed normalized")
+bbknn_regressed_scaled = run_bbknn("regressed_scaled", "bbknn_regressed_scaled", "BBKNN regressed scaled")
+
+#-----------------------------------------------------------------------------#
+
+
+
+#-----------------------------------------------------------------------------#
+
+import scanpy as sc
+
+# Define a helper function
+def run_harmony(layer_key, obsm_key, title):
+    ad = adata.copy()
+    sc.tl.pca(ad, svd_solver='arpack', layer=layer_key)
+    sce.pp.harmony_integrate(ad, key='sample')
+    sc.pp.neighbors(ad, n_neighbors=10, n_pcs=30)
+    sc.tl.umap(ad)
+    sc.tl.leiden(ad, resolution=0.5)
+    
+    # Store and plot UMAP
+    ad.obsm[obsm_key] = ad.obsm['X_umap']
+    sc.pl.embedding(
+        ad, basis=obsm_key,
+        color=["sample", "sorting", "celltypes"],
+        title=title, ncols=1
+    )
+    return ad
+
+# Run Harmony for each preprocessing variant
+harmony_normalized = run_harmony("normalized", "harmony_normalized", "Harmony normalized")
+harmony_scaled = run_harmony("scaled", "harmony_scaled", "Harmony scaled")
+harmony_regressed_norm = run_harmony("regressed_normalized", "harmony_regressed_normalized", "Harmony regressed normalized")
+harmony_regressed_scaled = run_harmony("regressed_scaled", "harmony_regressed_scaled", "Harmony regressed scaled")
+
+
+#-----------------------------------------------------------------------------#
+
+import scanpy as sc
+
+# Define a helper function for ComBat batch correction
+def run_combat(layer_key, obsm_key, title):
+    ad = sc.AnnData(
+        X=adata.layers[layer_key].copy(),
+        var=adata.var.copy(),
+        obs=adata.obs.copy()
+    )
+    sc.pp.combat(ad, key='sample')
+    sc.pp.pca(ad, n_comps=30, svd_solver='arpack')
+    sc.pp.neighbors(ad)
+    sc.tl.umap(ad)
+    sc.tl.leiden(ad, resolution=0.5)
+    
+    # Store and plot UMAP
+    ad.obsm[obsm_key] = ad.obsm['X_umap']
+    sc.pl.embedding(
+        ad, basis=obsm_key,
+        color=["sample", "sorting", "celltypes"],
+        title=title, ncols=1
+    )
+    return ad
+
+# Run ComBat for each preprocessing variant
+combat_normalized = run_combat("normalized", "combat_normalized", "Combat normalized")
+combat_scaled = run_combat("scaled", "combat_scaled", "Combat scaled")
+combat_regressed_normalized = run_combat("regressed_normalized", "combat_regressed_normalized", "Combat regressed + normalized")
+combat_regressed_scaled = run_combat("regressed_scaled", "combat_regressed_scaled", "Combat regressed + scaled")
+
+
+
+
+
+
+
+
+
+import scanpy as sc
+import scanorama
+import numpy as np
+
+# Define helper for scanorama integration
+def run_scanorama(layer_key, obsm_key):
+    # Set the working layer as X
+    ad = adata.copy()
+    ad.X = ad.layers[layer_key].copy()
+
+    # Split per batch
+    batches = ad.obs['sample'].cat.categories.tolist()
+    adata_batches = [ad[ad.obs['sample'] == batch].copy() for batch in batches]
+
+    # Subset to highly variable genes
+    adata_batches = [a[:, ad.var.highly_variable].copy() for a in adata_batches]
+
+    # Run integration
+    scanorama.integrate_scanpy(adata_batches, dimred=50)
+
+    # Concatenate integrated outputs
+    scanorama_int = [a.obsm['X_scanorama'] for a in adata_batches]
+    all_integrated = np.concatenate(scanorama_int, axis=0)
+
+    # Create a new AnnData object to store output
+    ad_integrated = ad.copy()
+    ad_integrated.obsm[obsm_key] = all_integrated
+
+    # Compute neighbors and UMAP using integrated space
+    sc.pp.neighbors(ad_integrated, use_rep=obsm_key, n_pcs=30)
+    sc.tl.umap(ad_integrated)
+    sc.tl.leiden(ad_integrated, resolution=0.5)
+
+    # Store UMAP coordinates
+    ad_integrated.obsm[f"{obsm_key}_umap"] = ad_integrated.obsm["X_umap"]
+
+    # Plot
+    sc.pl.embedding(
+        ad_integrated, basis=f"{obsm_key}_umap",
+        color=["sample", "sorting", "celltypes"],
+        title=f"Scanorama {layer_key}", ncols=1
+    )
+    
+    return ad_integrated
+
+# Run Scanorama for each preprocessing variant
+scanorama_norm = run_scanorama("normalized", "scanorama_normalized")
+scanorama_scaled = run_scanorama("scaled", "scanorama_scaled")
+scanorama_regressed_norm = run_scanorama("regressed_normalized", "scanorama_regressed_normalized")
+scanorama_regressed_scaled = run_scanorama("regressed_scaled", "scanorama_regressed_scaled")
+
+
+
+
+#-----------------------------------------------------------------------------#
+scvii = adata.copy()
+scvii.X = scvii.layers["counts"]
+
+#-----------------------------------------------------------------------------#
+#-----------------------------------------------------------------------------#
+#-----------------------------------------------------------------------------#
+
+#SCVI
+scvi.model.SCVI.setup_anndata(
+    scvii,
+    layer="counts", batch_key = "sample",    continuous_covariate_keys=["mitoRatio", "riboRatio", 
+                               "S.Score","G2M.Score"],
+)
+
+
+model = scvi.model.SCVI(
+    scvii,
+    n_layers=2,       # default
+    gene_likelihood="nb",
+)
+
+# train for up to 400 epochs, with early stopping on ELBO:
+model.train()
+scvi_model = model
+scvi_model.save("scvi_model", overwrite=True)
+
+
+SCVI_LATENT_KEY = "X_scVI"
+scvii.obsm[SCVI_LATENT_KEY] = model.get_latent_representation()
+sc.pp.neighbors(scvii, use_rep=SCVI_LATENT_KEY)
+sc.tl.leiden(scvii)
+sc.tl.umap(scvii, min_dist=0.3)
+sc.pl.umap(
+    scvii,
+    color=["sample", "sorting", "celltypes"],
+    frameon=False,
+    ncols=1,title="scvi"
+)
+scvii.obsm['SCVI umap'] = scvii.obsm['X_umap']
+#-----------------------------------------------------------------------------#
+#-----------------------------------------------------------------------------#
+#-----------------------------------------------------------------------------#
+SCANVII = scvii.copy()
+
+#SCANVI
+scanvi_model = scvi.model.SCANVI.from_scvi_model(
+    model,
+    adata=SCANVII,
+    labels_key="celltypes",
+    unlabeled_category="Unknown",
+)
+
+scanvi_model.train(max_epochs=20, n_samples_per_label=100)
+SCANVI_LATENT_KEY = "X_scANVI"
+SCANVII.obsm[SCANVI_LATENT_KEY] = scanvi_model.get_latent_representation(adata)
+sc.pp.neighbors(SCANVII, use_rep=SCANVI_LATENT_KEY)
+sc.tl.umap(SCANVII, min_dist=0.3)
+sc.pl.umap(
+    SCANVII,
+    color=["sample", "sorting", "celltypes"],
+    frameon=False,
+    ncols=1,title="scanvi"
+)
+
+SCANVII.obsm['SCANVI umap'] = SCANVII.obsm['X_umap']
+scanvi_model.save("scanvi_model", overwrite=True)
+
+
+#-----------------------------------------------------------------------------#
+#-----------------------------------------------------------------------------#
+#-----------------------------------------------------------------------------#
+
+#-----------------------------------------------------------------------------#
+#-----------------------------------------------------------------------------#
+#-----------------------------------------------------------------------------#
+
+metrics_bbknn_normalized = scib.metrics.metrics_fast(
+    adata, bbknn_normalized, "sample", "celltypes")
+metrics_bbknn_scaled = scib.metrics.metrics_fast(
+    adata, bbknn_scaled, "sample", "celltypes")
+metrics_bbknn_regressed_scaled = scib.metrics.metrics_fast(
+    adata, bbknn_regressed_scaled, "sample", "celltypes")
+metrics_bbknn_regressed_normalized = scib.metrics.metrics_fast(
+    adata, bbknn_regressed_normalized, "sample", "celltypes")
+
+
+metrics_harmony_normalized = scib.metrics.metrics_fast(
+    adata, harmony_normalized, "sample", "celltypes")
+metrics_harmony_scaled = scib.metrics.metrics_fast(
+    adata, harmony_scaled, "sample", "celltypes")
+metrics_harmony_regressed_norm = scib.metrics.metrics_fast(
+    adata, harmony_regressed_norm, "sample", "celltypes")
+metrics_harmony_regressed_scaled = scib.metrics.metrics_fast(
+    adata, harmony_regressed_scaled, "sample", "celltypes")
+
+
+metrics_combat_normalized = scib.metrics.metrics_fast(
+    adata, combat_normalized, "sample", "celltypes")
+metrics_combat_scaled = scib.metrics.metrics_fast(
+    adata, combat_scaled, "sample", "celltypes")
+metrics_combat_regressed_normalized = scib.metrics.metrics_fast(
+    adata, combat_regressed_normalized, "sample", "celltypes")
+metrics_combat_regressed_scaled = scib.metrics.metrics_fast(
+    adata, combat_regressed_scaled, "sample", "celltypes")
+
+
+metrics_scanorama_norm = scib.metrics.metrics_fast(
+    adata,
+    scanorama_norm,
+    batch_key="sample",
+    label_key="celltypes",
+    embed="scanorama_normalized"   # ← use your latent
+)
+
+metrics_scanorama_scaled = scib.metrics.metrics_fast(
+    adata, scanorama_scaled, "sample", "celltypes", embed="scanorama_scaled"
+)
+metrics_scanorama_reg_norm = scib.metrics.metrics_fast(
+    adata, scanorama_regressed_norm, "sample", "celltypes", 
+    embed="scanorama_regressed_normalized"
+)
+metrics_scanorama_reg_scaled = scib.metrics.metrics_fast(
+    adata, scanorama_regressed_scaled, "sample", "celltypes", 
+    embed="scanorama_regressed_scaled"
+)
+
+
+metrics_scvi = scib.metrics.metrics_fast(
+    adata,
+    scvii,
+    batch_key="sample",
+    label_key="celltypes",
+    embed="X_scVI",)
+
+metrics_scanvi = scib.metrics.metrics_fast(
+    adata, SCANVII, "sample", "celltypes", embed="X_scANVI"
+)
+
+
+metrics = pd.concat(
+    [
+        metrics_bbknn_normalized,
+        metrics_bbknn_scaled,
+        metrics_bbknn_regressed_normalized,
+        metrics_bbknn_regressed_scaled,
+        metrics_harmony_normalized,
+        metrics_harmony_scaled,
+        metrics_harmony_regressed_norm,
+        metrics_harmony_regressed_scaled,
+        metrics_combat_normalized,
+        metrics_combat_scaled,
+        metrics_combat_regressed_normalized,
+        metrics_combat_regressed_scaled,
+        metrics_scanorama_norm,
+        metrics_scanorama_scaled,
+        metrics_scanorama_reg_norm,
+        metrics_scanorama_reg_scaled,
+        metrics_scvi,
+        metrics_scanvi,
+    ],
+    axis="columns",
+)
+
+metrics = metrics.set_axis(
+    [
+        "BBKNN normalized",
+        "BBKNN scaled",
+        "BBKNN regressed normalized",
+        "BBKNN regressed scaled",
+        "Harmony normalized",
+        "Harmony scaled",
+        "Harmony regressed normalized",
+        "Harmony regressed scaled",
+        "ComBat normalized",
+        "ComBat scaled",
+        "ComBat regressed normalized",
+        "ComBat regressed scaled",
+        "Scanorama normalized",
+        "Scanorama scaled",
+        "Scanorama regressed normalized",
+        "Scanorama regressed scaled",
+        "scVI",
+        "scANVI",
+    ],
+    axis="columns",
+)
+
+# Select only the fast metrics
+metrics = metrics.loc[
+    [
+        "ASW_label",
+        "ASW_label/batch",
+        "PCR_batch",
+        "isolated_label_silhouette",
+        "graph_conn",
+        "hvg_overlap",
+    ],
+    :,
+]
+
+
+# Transpose so that metrics are columns and methods are rows
+metrics = metrics.T
+# Remove the HVG overlap metric because it's not relevant to embedding outputs
+metrics = metrics.drop(columns=["hvg_overlap"])
+metrics
+
+
+metrics.style.background_gradient(cmap="Blues")
+
+metrics_scaled = (metrics - metrics.min()) / (metrics.max() - metrics.min())
+metrics_scaled.style.background_gradient(cmap="Blues")
+
+
+metrics_scaled["Batch"] = metrics_scaled[
+    ["ASW_label/batch", "PCR_batch", "graph_conn"]
+].mean(axis=1)
+metrics_scaled["Bio"] = metrics_scaled[["ASW_label", "isolated_label_silhouette"]].mean(
+    axis=1
+)
+metrics_scaled.style.background_gradient(cmap="Blues")
+
+
+fig, ax = plt.subplots()
+ax.set_xlim(0, 1)
+ax.set_ylim(0, 1)
+metrics_scaled.plot.scatter(
+    x="Batch",
+    y="Bio",
+    c=range(len(metrics_scaled)),
+    ax=ax,
+)
+
+for k, v in metrics_scaled[["Batch", "Bio"]].iterrows():
+    ax.annotate(
+        k,
+        v,
+        xytext=(6, -3),
+        textcoords="offset points",
+        family="sans-serif",
+        fontsize=12,
+    )
+
+
+metrics_scaled["Overall"] = 0.4 * metrics_scaled["Batch"] + 0.6 * metrics_scaled["Bio"]
+metrics_scaled.style.background_gradient(cmap="Blues")
+from IPython.display import display
+display(metrics_scaled.style.background_gradient(cmap="Blues"))
+
+import matplotlib.pyplot as plt
+
+# Simple pandas approach:
+metrics_scaled.plot.barh(y="Overall", figsize=(8, 6))
+plt.xlabel("Overall Score")
+plt.ylabel("Method")
+plt.title("Overall Integration Benchmark (Horizontal)")
+plt.tight_layout()
+plt.show()
+#-----------------------------------------------------------------------------#
+
+adata = SCANVII.raw.to_adata()
+adata.raw = adata
+sc.pp.normalize_total(adata, target_sum=1e4)  # scale counts to 10,000 per cell
+sc.pp.log1p(adata)                           # take log(1 + expression)
+
+
+
+
+#-----------------------------------------------------------------------------#
+predictions = celltypist.annotate(adata,
+                                  model = 'Immune_All_Low.pkl',
+                                  majority_voting = True)
+
+
+predictions.predicted_labels
+# Get an `AnnData` with predicted labels embedded into the cell metadata columns.
+adata = predictions.to_adata()
+
+adata.obs[["celltypes", "majority_voting"]]
+
+# Increase figure size and use consistent color palette
+sc.pl.umap(
+    adata, 
+    color=['celltypes']
+)
+sc.pl.umap(
+    adata, 
+    color=[ 'predicted_labels']
+)
+sc.pl.umap(
+    adata, 
+    color=[ 'majority_voting']
+)
+celltypist.dotplot(predictions, use_as_reference = 'celltypes',
+                   use_as_prediction = 'predicted_labels')
+
+sc.save(adata,"adata.h5ad")
+#_----------------------------------------------------------------------------#
+
+marker_genes =  [*["DNTT", "CD99", "EGFL7", "SOCS2", "MT1X", "TKT", "CD34", "CYGB", "GMFG", "SCHIP1"],
+  *[ "SOCS2", "NPY", "SYNGR1", "EGFL7", "AIF1", "MDK", "CYGB", "LST1"],
+  *["IGLL1", "TSPO",  "PDLIM1", "IRF4", "CMTM8", "P4HA2", "NDUFA4", "BIK", "ACTG1"],
+  *["IGF2", "ACSM3", "LHPP", "NSMCE1", "REXO2", "BMP3", "HIST1H2AC", "HIST1H1C", "SOX4"],
+  *["MS4A1", "PLD4", "FCRLA", "CYB561A3", "NCF1", "RGS2", "CYBA", "CD37", "CD79A", "HLA-DRB1"],
+  *["MS4A1", "SLC2A3", "LINC00926", "CNN2", "PPAPDC1B", "LY9", "CXCR5", "CD40", "FCRL5", "CYBB"],]
+
+
+sc.pl.dotplot(adata, marker_genes, groupby="leiden");
+
