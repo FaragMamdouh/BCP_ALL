@@ -1,0 +1,22 @@
+
+import scanpy as sc
+from scipy import io
+
+
+
+os.chdir("/Volumes/BCP-ALL/Normal Dataset/Thoas/females_cd19")
+adata = sc.read_h5ad("adata.h5ad")
+
+adata = adata.raw.to_adata()  #only if adata has RAW saved and thats what you want!!
+with open('matrix_files/barcodes.tsv', 'w') as f:
+    for item in adata.obs_names:
+        f.write(item + '\n')
+
+with open('matrix_files/features.tsv', 'w') as f:
+    for item in ['\t'.join([x,x,'Gene Expression']) for x in adata.var["_index"]]:
+        f.write(item + '\n')
+        
+        
+io.mmwrite('matrix_files/matrix', adata.X.T)
+adata.obs.to_csv('metadata.csv')
+!gzip matrix_files/*
